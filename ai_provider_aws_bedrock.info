@@ -1,0 +1,7 @@
+name = AI Provider AWS Bedrock
+description = Use AWS Bedrock AI models through the AI module API.
+backdrop = 1.x
+type = module
+package = AI
+dependencies[] = key
+dependencies[] = ai

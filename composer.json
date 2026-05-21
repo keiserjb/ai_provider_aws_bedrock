@@ -1,0 +1,16 @@
+{
+    "name": "backdrop/ai_provider_aws_bedrock",
+    "description": "AWS Bedrock provider for the Backdrop CMS AI module.",
+    "type": "project",
+    "license": "GPL-2.0-or-later",
+    "authors": [
+        {
+            "name": "Justin Keiser",
+            "homepage": "https://keiserjb.com",
+            "role": "Maintainer"
+        }
+    ],
+    "require": {
+        "aws/aws-sdk-php": "^3.18"
+    }
+}

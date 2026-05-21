@@ -1,0 +1,24 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function ai_provider_aws_bedrock_install() {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  ai_upgrade_module_install('ai_provider_aws_bedrock');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ai_provider_aws_bedrock_uninstall() {
+  config('ai_provider_aws_bedrock.settings')->delete();
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function ai_provider_aws_bedrock_requirements($phase) {
+  if (!module_load_install('ai_upgrade')) { return []; }
+  return ai_upgrade_module_requirements($phase, 'ai_provider_aws_bedrock');
+}

@@ -1,0 +1,117 @@
+<?php
+
+/**
+ * @file
+ * AWS Bedrock AI provider integration for the AI module.
+ *
+ * This module enables using AWS Bedrock models (Anthropic Claude, Meta Llama,
+ * Mistral, Amazon Titan, Cohere, etc.) through the AI module's unified
+ * provider interface.
+ */
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_provider_aws_bedrock_config_info() {
+  return [
+    'ai_provider_aws_bedrock.settings' => [
+      'label' => t('AWS Bedrock Settings'),
+      'group' => t('Configuration'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_provider_aws_bedrock_autoload_info() {
+  return [
+    'AIBedrockAdapter' => 'includes/AIBedrockAdapter.php',
+  ];
+}
+
+/**
+ * Implements hook_ai_provider_info().
+ *
+ * Registers AWS Bedrock as an available AI provider.
+ */
+function ai_provider_aws_bedrock_ai_provider_info() {
+  return [
+    'aws_bedrock' => [
+      'label' => t('AWS Bedrock'),
+      'description' => t('Use AWS Bedrock foundation models including Claude, Llama, Mistral, Titan, and more.'),
+      'class' => 'AIBedrockAdapter',
+      'website' => 'https://aws.amazon.com/bedrock/',
+      'key_url' => 'https://console.aws.amazon.com/iam/home#/security_credentials',
+      'models_url' => 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+    ],
+  ];
+}
+
+/**
+ * Implements hook_ai_provider_settings_alter().
+ *
+ * Adds AWS Bedrock-specific settings to the AI module settings form.
+ */
+function ai_provider_aws_bedrock_ai_provider_settings_alter(&$settings, $context) {
+  if ($context['provider'] !== 'aws_bedrock') {
+    return;
+  }
+
+  $available_keys = function_exists('key_get_key_names_as_options')
+    ? key_get_key_names_as_options()
+    : [];
+
+  $providers_root = config_get('ai.settings', 'providers') ?: [];
+  $default_access_key = !empty($providers_root['aws_bedrock']['api_key']) ? $providers_root['aws_bedrock']['api_key'] : '';
+  $default_secret_key = !empty($providers_root['aws_bedrock']['aws_secret_key']) ? $providers_root['aws_bedrock']['aws_secret_key'] : '';
+  $default_region = !empty($providers_root['aws_bedrock']['aws_region'])
+    ? $providers_root['aws_bedrock']['aws_region']
+    : (config_get('ai_provider_aws_bedrock.settings', 'aws_region') ?: 'us-east-1');
+
+  $settings['api_key_aws_bedrock'] = [
+    '#type' => 'key_select',
+    '#title' => t('AWS Access Key ID'),
+    '#default_value' => $default_access_key,
+    '#options' => $available_keys,
+    '#key_filters' => ['type' => 'authentication'],
+    '#description' => t('Select the key containing your AWS Access Key ID. Get credentials from <a href="https://console.aws.amazon.com/iam/home#/security_credentials" target="_blank">AWS IAM Console</a>.'),
+    '#required' => TRUE,
+    '#weight' => -5,
+  ];
+
+  $settings['aws_secret_key'] = [
+    '#type' => 'key_select',
+    '#title' => t('AWS Secret Access Key'),
+    '#default_value' => $default_secret_key,
+    '#options' => $available_keys,
+    '#key_filters' => ['type' => 'authentication'],
+    '#description' => t('Select the key containing your AWS Secret Access Key.'),
+    '#required' => TRUE,
+    '#weight' => -4,
+  ];
+
+  $settings['aws_region'] = [
+    '#type' => 'select',
+    '#title' => t('AWS Region'),
+    '#default_value' => $default_region,
+    '#options' => [
+      'us-east-1' => t('US East (N. Virginia)'),
+      'us-east-2' => t('US East (Ohio)'),
+      'us-west-2' => t('US West (Oregon)'),
+      'ap-northeast-1' => t('Asia Pacific (Tokyo)'),
+      'ap-south-1' => t('Asia Pacific (Mumbai)'),
+      'ap-southeast-1' => t('Asia Pacific (Singapore)'),
+      'ap-southeast-2' => t('Asia Pacific (Sydney)'),
+      'ca-central-1' => t('Canada (Central)'),
+      'eu-central-1' => t('Europe (Frankfurt)'),
+      'eu-west-1' => t('Europe (Ireland)'),
+      'eu-west-2' => t('Europe (London)'),
+      'eu-west-3' => t('Europe (Paris)'),
+      'sa-east-1' => t('South America (São Paulo)'),
+    ],
+    '#description' => t('The AWS region where Bedrock models are available.'),
+    '#required' => TRUE,
+    '#weight' => -3,
+  ];
+}

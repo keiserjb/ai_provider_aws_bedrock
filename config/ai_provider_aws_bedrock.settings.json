@@ -1,0 +1,4 @@
+{
+  "_config_name": "ai_provider_aws_bedrock.settings",
+  "aws_region": "us-east-1"
+}
