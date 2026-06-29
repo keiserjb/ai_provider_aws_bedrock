@@ -436,7 +436,7 @@ class AIBedrockAdapter extends AIAdapterBase {
         'messages'        => $bedrock_messages,
         'inferenceConfig' => [
           'maxTokens'   => (int) $max_tokens ?: 1024,
-          'temperature' => (float) $temperature,
+          'temperature' => max(0.0, min(1.0, (float) $temperature)),
         ],
       ];
 
@@ -725,13 +725,111 @@ class AIBedrockAdapter extends AIAdapterBase {
         continue;
       }
 
+      // OpenAI-shape tool results become toolResult blocks in a user turn.
+      // Consecutive results merge into one turn: Converse requires roles to
+      // alternate, and all results for one assistant turn belong together.
+      if ($role === 'tool') {
+        $result_text = $msg['content'] ?? '';
+        if (!is_string($result_text)) {
+          $result_text = json_encode($result_text);
+        }
+        // Converse rejects empty text blocks; use a sentinel for empty outputs.
+        if ($result_text === '') {
+          $result_text = '(no output)';
+        }
+        $block = [
+          'toolResult' => [
+            'toolUseId' => (string) ($msg['tool_call_id'] ?? ''),
+            'content'   => [['text' => $result_text]],
+          ],
+        ];
+        $last = count($bedrock_messages) - 1;
+        if ($last >= 0
+          && $bedrock_messages[$last]['role'] === 'user'
+          && isset($bedrock_messages[$last]['content'][0]['toolResult'])) {
+          $bedrock_messages[$last]['content'][] = $block;
+        }
+        else {
+          $bedrock_messages[] = ['role' => 'user', 'content' => [$block]];
+        }
+        continue;
+      }
+
       // Bedrock Converse API supports 'user' and 'assistant' roles.
       $bedrock_role = ($role === 'assistant') ? 'assistant' : 'user';
 
       $content = $msg['content'] ?? '';
 
-      // Content can be a string or an array of content blocks.
+      // OpenAI-shape assistant tool_calls become toolUse blocks. Without
+      // this the calls were dropped and a text-less assistant turn became
+      // an empty text block, which Converse rejects.
+      if ($bedrock_role === 'assistant' && !empty($msg['tool_calls']) && is_array($msg['tool_calls'])) {
+        $blocks = [];
+        if (is_string($content)) {
+          if (trim($content) !== '') {
+            $blocks[] = ['text' => $content];
+          }
+        }
+        elseif (is_array($content)) {
+          foreach ($content as $block) {
+            $converted = $this->convertContentBlock($block, $bedrock_role);
+            if (isset($converted['text']) && $converted['text'] === '') {
+              continue;
+            }
+            $blocks[] = $converted;
+          }
+        }
+        foreach ($msg['tool_calls'] as $tc) {
+          $args = $tc['function']['arguments'] ?? ($tc['arguments'] ?? []);
+          if (is_string($args)) {
+            // Decode without assoc flag so nested {} stay as stdClass objects;
+            // json_decode($s, TRUE) would flatten {} to [] inside associative
+            // arrays, breaking args like {"filters":{}}.
+            $decoded = json_decode($args);
+            if ($decoded === NULL && json_last_error() !== JSON_ERROR_NONE) {
+              // Malformed model-generated JSON — surface as error state rather
+              // than silently coercing to empty input, so callers can detect
+              // and handle the failure.
+              watchdog('ai_provider_aws_bedrock', 'Malformed tool argument JSON for "@tool": @error', [
+                '@tool'  => $tc['function']['name'] ?? ($tc['name'] ?? ''),
+                '@error' => json_last_error_msg(),
+              ], WATCHDOG_WARNING);
+              $args = ['_raw_args' => $args];
+            }
+            else {
+              $args = $decoded;
+            }
+          }
+          // 'input' must serialize as a JSON object. A stdClass from
+          // json_decode passes through directly. An empty PHP array encodes
+          // as [] and a sequential list as [...] — both rejected by Bedrock.
+          if ($args instanceof \stdClass) {
+            $input = $args;
+          }
+          elseif (is_array($args) && $args !== []) {
+            $input = array_values($args) === $args ? (object) $args : $args;
+          }
+          else {
+            $input = (object) [];
+          }
+          $blocks[] = [
+            'toolUse' => [
+              'toolUseId' => (string) ($tc['id'] ?? ''),
+              'name'      => (string) ($tc['function']['name'] ?? ($tc['name'] ?? '')),
+              'input'     => $input,
+            ],
+          ];
+        }
+        $bedrock_messages[] = ['role' => 'assistant', 'content' => $blocks];
+        continue;
+      }
+
+      // Content can be a string or an array of content blocks. Converse
+      // rejects empty content; skip empty turns.
       if (is_string($content)) {
+        if (trim($content) === '') {
+          continue;
+        }
         $bedrock_messages[] = [
           'role'    => $bedrock_role,
           'content' => [
@@ -742,7 +840,14 @@ class AIBedrockAdapter extends AIAdapterBase {
       elseif (is_array($content)) {
         $blocks = [];
         foreach ($content as $block) {
-          $blocks[] = $this->convertContentBlock($block, $bedrock_role);
+          $converted = $this->convertContentBlock($block, $bedrock_role);
+          if (isset($converted['text']) && $converted['text'] === '') {
+            continue;
+          }
+          $blocks[] = $converted;
+        }
+        if ($blocks === []) {
+          continue;
         }
         $bedrock_messages[] = [
           'role'    => $bedrock_role,
@@ -991,7 +1096,11 @@ class AIBedrockAdapter extends AIAdapterBase {
           : json_encode(
             $msg['content']
           );
-        $system[] = ['text' => trim($text)];
+        $text = trim($text);
+        // Converse rejects empty text blocks.
+        if ($text !== '') {
+          $system[] = ['text' => $text];
+        }
       }
     }
     return $system;
@@ -1053,7 +1162,7 @@ class AIBedrockAdapter extends AIAdapterBase {
         'messages'        => $bedrock_messages,
         'inferenceConfig' => [
           'maxTokens'   => (int) $max_tokens ?: 1024,
-          'temperature' => (float) $temperature,
+          'temperature' => max(0.0, min(1.0, (float) $temperature)),
         ],
       ];
 
@@ -1114,10 +1223,37 @@ class AIBedrockAdapter extends AIAdapterBase {
             $content .= $block['text'];
           }
           if (isset($block['toolUse'])) {
+            // Callers (ai_agents) require 'arguments' to be an array — a
+            // JSON string fails their is_array() check and the tool runs
+            // with no arguments.
+            $input = $block['toolUse']['input'] ?? [];
+            if (is_string($input)) {
+              $decoded = json_decode($input, TRUE);
+              if ($decoded === NULL && json_last_error() !== JSON_ERROR_NONE) {
+                // Malformed JSON from Bedrock — preserve raw value as error
+                // state rather than silently coercing to an empty array.
+                watchdog('ai_provider_aws_bedrock', 'Malformed toolUse input JSON from Bedrock for "@tool": @error', [
+                  '@tool'  => $block['toolUse']['name'] ?? '',
+                  '@error' => json_last_error_msg(),
+                ], WATCHDOG_WARNING);
+                $input = ['_raw_input' => $input];
+              }
+              elseif (!is_array($decoded)) {
+                // Valid JSON but a scalar — (array) casting would produce bogus
+                // positional arguments, so treat it as an error state instead.
+                watchdog('ai_provider_aws_bedrock', 'Unexpected scalar toolUse input from Bedrock for "@tool"', [
+                  '@tool' => $block['toolUse']['name'] ?? '',
+                ], WATCHDOG_WARNING);
+                $input = ['_raw_input' => $input];
+              }
+              else {
+                $input = $decoded;
+              }
+            }
             $tool_calls[] = [
               'id'        => $block['toolUse']['toolUseId'],
               'name'      => $block['toolUse']['name'],
-              'arguments' => json_encode($block['toolUse']['input']),
+              'arguments' => is_array($input) ? $input : (array) $input,
             ];
           }
         }
